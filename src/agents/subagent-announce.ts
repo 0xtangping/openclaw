@@ -76,6 +76,48 @@ function resolveSubagentAnnounceTimeoutMs(cfg: ReturnType<typeof loadConfig>): n
   return Math.min(Math.max(1, Math.floor(configured)), MAX_TIMER_SAFE_TIMEOUT_MS);
 }
 
+function summarizeSubagentFailure(errorText: string): {
+  provider?: string;
+  errorType?: string;
+  recoveryHint?: string;
+} {
+  const normalized = errorText.toLowerCase();
+
+  const provider = (() => {
+    if (normalized.includes("anthropic")) {
+      return "anthropic";
+    }
+    if (normalized.includes("openai")) {
+      return "openai";
+    }
+    if (normalized.includes("gemini") || normalized.includes("google")) {
+      return "google";
+    }
+    if (normalized.includes("claude")) {
+      return "anthropic";
+    }
+    return undefined;
+  })();
+
+  const isRateLimit =
+    /\brate_limit_error\b/.test(normalized) ||
+    /\b429\b/.test(normalized) ||
+    /\brate limit\b/.test(normalized) ||
+    /\btoo many requests\b/.test(normalized) ||
+    /\bquota\b/.test(normalized);
+
+  const errorType = isRateLimit ? "rate_limit_error" : undefined;
+  const recoveryHint = isRateLimit
+    ? "Transient rate limit. Retry later, switch model/provider, or shorten context."
+    : undefined;
+
+  return {
+    provider,
+    errorType,
+    recoveryHint,
+  };
+}
+
 function buildCompletionDeliveryMessage(params: {
   findings: string;
   subagentName: string;
@@ -97,9 +139,18 @@ function buildCompletionDeliveryMessage(params: {
   }
   const header = (() => {
     if (params.outcome?.status === "error") {
-      return params.spawnMode === "session"
-        ? `❌ Subagent ${params.subagentName} failed this task (session remains active)`
-        : `❌ Subagent ${params.subagentName} failed`;
+      const details = summarizeSubagentFailure(params.outcome.error || "");
+      const base =
+        params.spawnMode === "session"
+          ? `❌ Subagent ${params.subagentName} failed this task (session remains active)`
+          : `❌ Subagent ${params.subagentName} failed`;
+      const suffixParts = [
+        details.provider ? `provider=${details.provider}` : undefined,
+        details.errorType ? `error_type=${details.errorType}` : undefined,
+      ].filter((part): part is string => Boolean(part));
+      const suffix = suffixParts.length > 0 ? ` — ${suffixParts.join(", ")}` : "";
+      const recovery = details.recoveryHint ? `\nRecovery: ${details.recoveryHint}` : "";
+      return `${base}${suffix}${recovery}`;
     }
     if (params.outcome?.status === "timeout") {
       return params.spawnMode === "session"

@@ -864,6 +864,44 @@ describe("subagent announce formatting", () => {
     expect(directTargets).not.toContain("channel:main-parent-channel");
   });
 
+  it("adds actionable rate-limit details to error completion headers", async () => {
+    sendSpy.mockClear();
+    sessionStore = {
+      "agent:main:subagent:test": {
+        sessionId: "child-session-direct-rate-limit",
+      },
+      "agent:main:main": {
+        sessionId: "requester-session-rate-limit",
+      },
+    };
+    chatHistoryMock.mockResolvedValueOnce({
+      messages: [{ role: "assistant", content: [{ type: "text", text: "last reply text" }] }],
+    });
+    readLatestAssistantReplyMock.mockResolvedValue("");
+
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-direct-completion-rate-limit",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      requesterOrigin: { channel: "discord", to: "channel:12345", accountId: "acct-1" },
+      ...defaultOutcomeAnnounce,
+      outcome: { status: "error", error: "Anthropic 429 rate_limit_error" },
+      expectsCompletionMessage: true,
+      spawnMode: "session",
+    });
+
+    expect(didAnnounce).toBe(true);
+    expect(sendSpy).toHaveBeenCalledTimes(1);
+    const call = sendSpy.mock.calls[0]?.[0] as { params?: Record<string, unknown> };
+    const rawMessage = call?.params?.message;
+    const msg = typeof rawMessage === "string" ? rawMessage : "";
+    expect(msg).toContain("❌ Subagent main failed this task (session remains active)");
+    expect(msg).toContain("provider=anthropic");
+    expect(msg).toContain("error_type=rate_limit_error");
+    expect(msg).toContain("Recovery: Transient rate limit.");
+  });
+
   it("uses completion direct-send headers for error and timeout outcomes", async () => {
     const cases = [
       {
